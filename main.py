@@ -3,14 +3,21 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from PyQt5.QtWidgets import (QWidget, QPushButton, 
+    QHBoxLayout, QVBoxLayout, QApplication,QLabel,QLineEdit, QCheckBox,QTextEdit)
+from PyQt5 import QtCore
+from PyQt5.Qt import (QThread, pyqtSignal)
 from time import sleep
 import time
 from PIL import Image
+from PyQt5.QtGui import QTextCursor
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.oxml.ns import qn
 import xlrd
-import os
+import xlwt
+import xlutils.copy as xlCopy
+import os,sys,json,requests
 # 设置默认字体
 def chg_font(obj, fontname='微软雅黑', size=None):
     ## 设置字体函数
@@ -18,6 +25,29 @@ def chg_font(obj, fontname='微软雅黑', size=None):
     obj._element.rPr.rFonts.set(qn('w:eastAsia'), fontname)
     if size and isinstance(size, Pt):
         obj.font.size = size
+# 读取车牌与进度
+def readData(carFile, hisFile,isCon):
+    if not isCon or not os.path.exists(hisFile):
+        lastFile = xlrd.open_workbook(carFile)
+        sheet = lastFile.sheet_by_index(0)
+        res = []
+        for i in range(1,sheet.nrows):
+            res.append(sheet.row_values(i))
+        return res,0,0
+    else:
+        lastFile = xlrd.open_workbook(hisFile)
+        sheet = lastFile.sheet_by_index(0)
+        res = []
+        good = 0
+        index = -1
+        for i in range(1,sheet.nrows):
+            if sheet.row_values(i)[1] == "正常":
+                good += 1
+            elif index == -1 and len(sheet.row_values(i)[1]) == 0:
+                index = i
+            res.append(sheet.row_values(i))
+        return res,index - 1,good
+
 
 def readFile(file = "车牌.xlsx"):
     lastFile = xlrd.open_workbook(file)
@@ -57,6 +87,30 @@ def writeData(name, corName = ""):
                 item.paragraph_format.space_after = Pt(0)
     doc.save('结果.docx')
 
+# 写出结果excel
+def writeRes(file, index, car, msg):
+    line = [0]
+    def writeLine(line, sheet,*arr):
+        col = 0
+        for i in arr:
+            sheet.write(line[0], col, i)
+            col += 1
+        line[0] += 1
+    if os.path.exists(file):
+        resFile = xlrd.open_workbook(file)
+        resFile = xlCopy.copy(resFile)
+        resExcel = resFile.get_sheet(0)
+    else:
+        resFile = xlwt.Workbook()
+        resExcel = resFile.add_sheet('sheet1')
+        writeLine(line, resExcel, ["车牌", "状态"])
+        for item in car:
+            writeLine(line, resExcel, item)
+    resExcel.write(index+1, 1, msg)
+    resFile.save(file)
+
+
+
 
 def getByName(driver, name = "粤SGH6593"):
     waitNotEle(driver,".ant-spin-dot.ant-spin-dot-spin")
@@ -82,8 +136,8 @@ def getByName(driver, name = "粤SGH6593"):
     # 获取公司名
     cor = driver.find_elements_by_css_selector(".ant-tree-title")[1].text
     cor = cor[0:cor.find("(")]
+    sleep(2)
     waitEle(driver,".ant-tree-node-content-wrapper.ant-tree-node-content-wrapper-normal")
-    sleep(1)
     # 查找子列表
     selectList = driver.find_elements_by_css_selector(".ant-tree-node-content-wrapper.ant-tree-node-content-wrapper-normal")
 
@@ -113,7 +167,7 @@ def getByName(driver, name = "粤SGH6593"):
         elif str(driver.current_url).find("trackPlayback") != -1:
             openWebs["trackPlayback"] = item
 
-    print("正在处理轨迹页面")
+    qtPrint("正在处理轨迹页面")
     # 处理轨迹页面
     driver.switch_to.window(openWebs["trackPlayback"])
     waitEle(driver, ".amap-icon")
@@ -121,7 +175,7 @@ def getByName(driver, name = "粤SGH6593"):
     driver.save_screenshot("./img/轨迹.png")
     driver.close()
 
-    print("正在处理实时视频")
+    qtPrint("正在处理实时视频")
     #处理实时视频
     jsCode = 'let timeInt, isTimeOut = false, maxTimes = 120\n\
     function fun() {\n\
@@ -182,22 +236,10 @@ def getByName(driver, name = "粤SGH6593"):
     driver.switch_to.window(openWebs["monitorMap"])
     return {
             "state": "good",
-            "msg": cor
+            "msg": "正常",
+            "cor": cor
     }
 
-# 添加cookie
-def addCookie(driver, s):
-    a = s.split(";")
-    print(a)
-    t = {}
-    for item in a:
-        b = item.split("=")
-        t[b[0]] = b[1]
-        driver.add_cookie({
-            "name":b[0],
-            "value":b[1]
-        })
-    print(t)
 
 # 等待浏览器加载元素
 def waitEle(driver, ele, times=30, between = 0.3):
@@ -206,7 +248,7 @@ def waitEle(driver, ele, times=30, between = 0.3):
             EC.presence_of_element_located((By.CSS_SELECTOR, ele))
         )
     except:
-        print("等待元素出错" + ele)
+        qtPrint("等待元素出错" + ele)
 
 # 等待元素消失
 def waitNotEle(driver, ele, times=30):
@@ -215,7 +257,7 @@ def waitNotEle(driver, ele, times=30):
             EC.presence_of_element_located((By.CSS_SELECTOR, ele))
         )
     except:
-        print("等待元素出错" + ele)
+        qtPrint("等待元素出错" + ele)
 
 def waitClickEle(driver, ele, times = 30):
     try:
@@ -223,54 +265,236 @@ def waitClickEle(driver, ele, times = 30):
             EC.element_to_be_clickable((By.CSS_SELECTOR, ele))
         )
     except:
-        print("等待元素出错")
+        qtPrint("等待元素出错")
 
-if __name__ == "__main__":
-    choose = input("是否打开浏览器： 1、否  2、是\n")
-    x = 0
-    if choose == "1":
-        x = 1980
-    if input("是否删除历史 1、否  2、是\n") == "2":
-        try:
-            os.remove("结果.docx")
-            os.remove("错误.csv")
-        except:
-            pass
-    # 读取文件
-    cars = readFile("车牌.xlsx")
-    driver = webdriver.Chrome()
-    driver.set_window_size(1980,1280)
-    driver.set_window_position(x, 0)
-    # 打开登陆
-    driver.get("http://112.94.64.104:8080/login")
-    # 登陆
-    waitEle(driver,".ant-input")
-    inputBox =  driver.find_elements_by_css_selector(".ant-input")
-    inputBox[0].send_keys("zhitou")
-    inputBox[1].send_keys("123456")
-    waitEle(driver,".ant-btn")
-    driver.find_elements_by_class_name("ant-btn")[0].click()
-    waitEle(driver,".ant-menu-submenu-title")
-    # 跳转到监控页面
-    driver.execute_script("window.location.href = 'http://112.94.64.104:8080/monitorMap'")
-    for i in range(len(cars)):
-        try:
-            item = cars[i]
-            print("正在开始" + str(item[0]) + "," + str(i + 1) + "/" + str(len(cars)))
-            res = getByName(driver, item[0])
-            if res["state"] == "good":
-                writeData(item[0], res["msg"])
-            else: 
-                print(res["msg"])
-                f = open('错误.csv','a')
-                f.write(str(item[0]) + "," + res["msg"]+"\n")
-                f.close()
-        except:
-            f = open('错误.csv','a')
-            f.write(str(item[0]) + "," + "未知错误\n")
-            f.close()
-    print("程序结束")
-    driver.quit()
+
+# 可拖拽文本框
+class MyLineEdit(QLineEdit):
+    def __init__(self):
+        super(MyLineEdit, self).__init__()
+        self.setAcceptDrops(True)
+
+    # 拖拽内容进来的时候触发这个事件
+    def dragEnterEvent(self, e):
+        print(e)
+        if e.mimeData().hasText():
+            e.accept()
+        else:
+            e.ignore()
+
+    # 内容放置（松开鼠标时）时触发这个事件
+    def dropEvent(self, e):
+      print(e.mimeData().text())
+      self.setText(e.mimeData().text()[8:])
+
+cars = 0;index = 0;good = 0;choose = 0;checkBox2 = 0;resExcel = 0;progressLabel = 0; mySignal = 0;driver= 0
+# 在qt上显示调试信息
+def qtPrint(s):
+    global mySignal
+    mySignal.emit(s)
+    # debugBox.append(s + "\n")
+    # print(s)
+
+# 用线程启动浏览器爬虫，防止界面死锁
+class Thread(QThread):
+    _signal =pyqtSignal(str)
+    def __init__(self):
+        global mySignal
+        super().__init__()
+        mySignal = self._signal
+    def run(self):
+        global cars,index,good,choose,checkBox2,resExcel,progressLabel,debugBox, driver
+        length = len(cars)
+        x = 0
+        if not choose:
+            x = 1980
+        if checkBox2.checkState():
+            try:
+                os.remove("结果.docx")
+                print(resExcel.text())
+                os.remove(resExcel.text())
+            except:
+                pass
+        # 读取文件
+        driver = webdriver.Chrome()
+        driver.set_window_size(1980,1280)
+        driver.set_window_position(x, 0)
+        # 打开登陆
+        driver.get("http://112.94.64.104:8080/login")
+        # 登陆
+        waitEle(driver,".ant-input")
+        inputBox =  driver.find_elements_by_css_selector(".ant-input")
+        inputBox[0].send_keys("zhitou")
+        inputBox[1].send_keys("123456")
+        waitEle(driver,".ant-btn")
+        driver.find_elements_by_class_name("ant-btn")[0].click()
+        waitEle(driver,".ant-menu-submenu-title")
+        # 跳转到监控页面
+        driver.execute_script("window.location.href = 'http://112.94.64.104:8080/monitorMap'")
+        for i in range(index, len(cars)):
+            try:
+                item = cars[i]
+                qtPrint("正在开始" + str(item[0]) + "," + str(i + 1) + "/" + str(len(cars)))
+                res = getByName(driver, item[0])
+                if res["state"] == "good":
+                    good += 1
+                    writeData(item[0], res["cor"])
+            except:
+                res = {}
+                res["msg"] = "未知错误"
+            finally:
+                print(res)
+                qtPrint(res["msg"])
+                progressLabel.setText("进度：%d/%d，成功处理：%d/%d" % (i+1,length,good,length))
+                writeRes(resExcel.text(), i, cars, res["msg"])
+        qtPrint("程序结束")
+        driver.quit()
+        driver = 0
+        self._signal.emit("quit")
+
+
+class Example(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+    #按钮事件
+
+    def initUI(self):
+      #初始化按钮
+      self.originButton = QPushButton("开始")
+      #按钮事件
+      self.originButton.clicked.connect(self.start)
+      expTime = "2021-9-30 00:00:00"
+      isnotEpi, nowTime, timeStr = getTIme("2021-9-30 00:00:00")
+      self.setWindowTitle('车机入网认证审核系统')
+      # 大于某个时间，程序不可用
+      if not isnotEpi:
+          self.originButton.setEnabled(False)
+
+      #文本框
+      label1=QLabel(self)
+      label1.setText('车牌文件(拖入)')
+      carExcel=MyLineEdit()
+      self.carExcel = carExcel
+      carExcel.setText("./车牌.xlsx")
+      carExcel.setDragEnabled(True)
+      label2=QLabel(self)
+      label2.setText('结果excel(拖入)')
+      resExcel=MyLineEdit()
+      self.resExcel = resExcel
+      resExcel.setText("./结果.xls")
+      resExcel.setDragEnabled(True)
+
+      #复选框
+      self.checkBox1 = QCheckBox("显示浏览器", self)
+      self.checkBox2 = QCheckBox("删除历史（删除两个结果文件，使用新进度）", self)
+      hboxCheckBox = QHBoxLayout()
+      hboxCheckBox.addWidget(self.checkBox1)
+      hboxCheckBox.addWidget(self.checkBox2)
+      self.checkBox2.setChecked(False)
+
+      # 进度与调试
+      self.progressLabel = QLabel(self)
+      self.debugBox = QTextEdit(self)
+    #   self.debugBox.setEnabled(False)
+      self.debugBox.setText("调试信息")
+      hboxProgress = QHBoxLayout()
+      hboxProgress.addWidget(self.debugBox,1, QtCore.Qt.AlignBottom)
+    #   hboxProgress.addStretch(1)
+      hboxProgress.addWidget(self.progressLabel,0, QtCore.Qt.AlignBottom)
+      self.progressLabel.setText("进度：0/0，成功处理：0/0")
+
+
+      #文本布局
+      hbox = QHBoxLayout()
+      hbox.addWidget(label1)
+      hbox.addWidget(carExcel)
+      hbox11 = QHBoxLayout()
+      hbox11.addWidget(label2)
+      hbox11.addWidget(resExcel)
+
+      
+      #按钮布局
+      hbox1 = QHBoxLayout()
+      
+      expLable = QLabel(self)
+      expLable.setText('过期时间:' + expTime + ",运行时间:" + nowTime)
+      hbox1.addWidget(expLable)
+      hbox1.addStretch(1)
+      hbox1.addWidget(self.originButton)
+
+      #整体布局
+      vbox = QVBoxLayout()
+      vbox.addLayout(hbox)
+      vbox.addLayout(hbox11)
+      vbox.addLayout(hboxCheckBox)
+      vbox.addLayout(hboxProgress)
+      
+      vbox.addStretch(1)
+      
+      vbox.addLayout(hbox1)
+      #启用布局
+      self.setLayout(vbox)
+      self.resize(500, 100)
+      #设置窗口信息
+      self.show()
+    
+      
+    def start(self):
+        global cars,index,good,choose,checkBox2,resExcel,progressLabel,debugBox
+        # 读取历史文件
+        cars,index,good = readData(self.carExcel.text(), self.resExcel.text(), not self.checkBox2.checkState())
+        length = len(cars)
+        if index < 0:
+            index = len(cars)
+        self.progressLabel.setText("进度：%d/%d，成功处理：%d/%d" % (index,length,good,length))
+
+        # 处理用户选择
+        choose = self.checkBox1.checkState()
+        checkBox2 = self.checkBox2
+        resExcel = self.resExcel
+        progressLabel = self.progressLabel
+        debugBox = self.debugBox
+        
+        self.thread = Thread()
+        self.thread._signal.connect(self.ThreadSignal)
+        self.thread.start()
+        self.originButton.setEnabled(False)
+        pass
+
+    # 显示调试信息
+    def qtPrint(self, s):
+        self.debugBox.append(s)
+        print(s)
+        self.debugBox.moveCursor(QTextCursor.End)
+
+    # 调试信号接收
+    def ThreadSignal(self, s):
+        if s != "quit":
+            self.qtPrint(s)
+        else:
+            self.originButton.setEnabled(True)
+    # 退出事件，关闭浏览器
+    def closeEvent(self, event):
+        global driver
+        if driver != 0:
+            driver.quit()
+        event.accept()
+def getTIme(timeStr = "2021-9-30 00:00:00"):
+    try:
+        tabaoTime = requests.get("http://api.m.taobao.com/rest/api3.do?api=mtop.common.getTimestamp")
+        tabaoTime = json.loads(tabaoTime.text)
+        nowTimeSt = int(tabaoTime["data"]["t"])/ 1000
+        nowTime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(nowTimeSt))
+        expTimeStamp=time.mktime(time.strptime(timeStr, '%Y-%m-%d %H:%M:%S'))
+        return (expTimeStamp > nowTimeSt), nowTime, timeStr
+    except:
+        return False, "错误", "错误"
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    ex = Example()
+    sys.exit(app.exec_())
+
 
 
 
